@@ -1274,13 +1274,13 @@ function renderBracketForDiv(div, container) {
   const HG = 90;   // bmatch height (78) + base gap (12)
   const GAP = 12;
 
-  // The 3rd-place match rides along in the final's column (below the final box).
+  // The 3rd-place match is its own column, aligned to the right of the final.
   const bronzeRound = DS.ko.find(r => r[0] && r[0].bronze);
   const finalRoundIdx = bronzeRound ? DS.ko.length - 2 : DS.ko.length - 1;
-  let finalMatchesEl = null;
+  let finalColPadTop = 0;
 
   DS.ko.forEach((round, ri) => {
-    if (round[0] && round[0].bronze) return;  // 3rd-place shown inside the final column, not as its own tree column
+    if (round[0] && round[0].bronze) return;  // 3rd-place drawn as a separate aligned column after the loop
     const col = document.createElement('div');
     col.className = 'bround';
     col.innerHTML = `<div class="brnd-title">${getKORoundName(div, ri)}</div>`;
@@ -1337,32 +1337,35 @@ function renderBracketForDiv(div, container) {
     });
     col.appendChild(matchesEl);
     tree.appendChild(col);
-    if (ri === finalRoundIdx) finalMatchesEl = matchesEl;
+    if (ri === finalRoundIdx) finalColPadTop = colPadTop;
   });
 
-  // Attach the 3rd-place match beneath the final, in the same column.
-  if (bronzeRound && finalMatchesEl) {
+  // 3rd-place match: its own column to the right of the final, vertically aligned with it.
+  if (bronzeRound) {
     const bz = bronzeRound[0];
     const bsa = parseInt(bz.sa), bsb = parseInt(bz.sb);
     const bhs = isValidScore(bsa, bsb);
     const knownA = bz.a && !bz.a.startsWith('Loser of');
     const knownB = bz.b && !bz.b.startsWith('Loser of');
     const bwa = bhs && bsa > bsb, bwb = bhs && bsb > bsa;
-    const bronzeWrap = document.createElement('div');
-    bronzeWrap.className = 'bmatch-wrap bronze-inline';
-    bronzeWrap.innerHTML = `<div>
-      <div class="bronze-title">&#129353; 3RD PLACE</div>
-      <div class="bmatch-box">
-        <div class="bmatch">
-          <div class="bteam ${bwa ? 'win' : ''} ${knownA ? '' : 'tbd'}">
-            <span class="bname">${bz.a}</span>${bhs ? `<span class="bsc">${bz.sa}</span>` : ''}
-          </div>
-          <div class="bteam ${bwb ? 'win' : ''} ${knownB ? '' : 'tbd'}">
-            <span class="bname">${bz.b}</span>${bhs ? `<span class="bsc">${bz.sb}</span>` : ''}
-          </div>
+    const bcol = document.createElement('div');
+    bcol.className = 'bround bround-bronze';
+    bcol.innerHTML = `<div class="brnd-title">&#129353; 3rd Place</div>`;
+    const bMatches = document.createElement('div');
+    bMatches.className = 'brnd-matches';
+    bMatches.style.paddingTop = finalColPadTop + 'px';
+    bMatches.innerHTML = `<div class="bmatch-wrap"><div class="bmatch-box">
+      <div class="bmatch">
+        <div class="bteam ${bwa ? 'win' : ''} ${knownA ? '' : 'tbd'}">
+          <span class="bname">${bz.a}</span>${bhs ? `<span class="bsc">${bz.sa}</span>` : ''}
         </div>
-      </div></div>`;
-    finalMatchesEl.appendChild(bronzeWrap);
+        <div class="bteam ${bwb ? 'win' : ''} ${knownB ? '' : 'tbd'}">
+          <span class="bname">${bz.b}</span>${bhs ? `<span class="bsc">${bz.sb}</span>` : ''}
+        </div>
+      </div>
+    </div></div>`;
+    bcol.appendChild(bMatches);
+    tree.appendChild(bcol);
   }
 
   container.appendChild(scroll);
