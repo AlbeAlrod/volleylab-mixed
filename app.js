@@ -239,6 +239,31 @@ function scoreError(a, b) {
   return null;
 }
 
+// Lexicographic tuple compare (higher is better). Returns >0 if a beats b.
+function cmpScore(a, b) {
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+  return 0;
+}
+
+// Has this division started? (any pool or knockout game already has a valid score)
+function divHasStarted(div) {
+  const DS = S[div];
+  if (!DS) return false;
+  const scored = g => isValidScore(parseInt(g.sa), parseInt(g.sb));
+  return DS.sched.some(scored) || DS.ko.some(r => r.some(scored));
+}
+function anyActiveStarted() { return getActiveDivs().some(divHasStarted); }
+
+// Structural changes (add/remove couples, redraw, regenerate) are only allowed
+// before the first result. Returns true (and warns) when the division is locked.
+function lockedIfStarted(div) {
+  if (divHasStarted(div)) {
+    alert('The tournament has already started — results are locked in.\nRoster changes, redraws and schedule changes are only allowed before the first score is entered.');
+    return true;
+  }
+  return false;
+}
+
 // ============ ROUND NAME ============
 function roundName(count) {
   if (count === 2)  return 'Final';
@@ -518,6 +543,7 @@ function saveEdit() {
 
 function addTeam(div, gi) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   const inp = document.getElementById(`new-team-${div}-${gi}`);
   if (!inp) return;
   const name = inp.value.trim();
@@ -529,6 +555,7 @@ function addTeam(div, gi) {
 
 function deleteTeam(div, gi, ti) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   if (S[div].groups[gi].teams.length <= 1) { alert('Each pool needs at least 1 team'); return; }
   S[div].groups[gi].teams.splice(ti, 1);
   save(); renderStandings();
@@ -614,6 +641,7 @@ function openEditRoster(div, idx) {
 
 function addToRoster(div) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   const inp = document.getElementById(`new-couple-${div}`);
   if (!inp) return;
   const name = inp.value.trim();
@@ -625,12 +653,14 @@ function addToRoster(div) {
 
 function deleteFromRoster(div, idx) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   S[div].roster.splice(idx, 1);
   save(); renderCouplesPage();
 }
 
 function resetRoster(div) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   if (!confirm('Reset to default couples?')) return;
   S[div].roster = div === 'women' ? [...DEFAULT_WOMEN_ROSTER] : [...DEFAULT_MEN_ROSTER];
   save(); renderCouplesPage();
@@ -647,6 +677,7 @@ function shuffle(arr) {
 
 function drawAndCreate(div) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   if (S[div].sched.length && !confirm('This will clear the current schedule and draw new groups. Continue?')) return;
 
   const cfg = S[div].cfg;
@@ -750,31 +781,57 @@ function generateScheduleForDiv(div) {
   const nc = cfg.courts || 2;
   const offset = cfg.courtOffset || 0;
 
-  // Each pool gets a fixed court: pool gi → court (gi % nc) + 1 + offset
-  // Pools cycle through courts if there are more pools than courts
-  const courtQueues = {};
+  // ---- Smart pool-stage schedule ----
+  // Priority 1: keep each pool on its home court so couples don't switch courts.
+  // Priority 2: when a court would otherwise sit idle, fill it with a game from a
+  //             pool that still has games left, so the round finishes sooner.
+  // Constraints: a couple never plays on two courts in the same slot; each couple's
+  //              games are spread so waiting is as even and short as possible.
+  const courtList = [];
+  for (let c = 0; c < nc; c++) courtList.push(c + 1 + offset);
+
+  // All round-robin games, each tagged with its pool's home court.
+  const remaining = [];
   DS.groups.forEach((grp, gi) => {
-    const court = (gi % nc) + 1 + offset;
-    if (!courtQueues[court]) courtQueues[court] = [];
+    const homeCourt = (gi % nc) + 1 + offset;
     rr(grp.teams).forEach(([a, b]) => {
-      courtQueues[court].push({ type:'g', div, gi, gn:grp.name, a, b, sa:'', sb:'', court });
+      remaining.push({ type:'g', div, gi, gn:grp.name, a, b, sa:'', sb:'', homeCourt, court:homeCourt });
     });
   });
 
-  const courts = Object.keys(courtQueues).map(Number).sort((a,b) => a-b);
-  const maxGames = Math.max(...courts.map(c => courtQueues[c].length));
+  const poolRem = {};
+  remaining.forEach(g => { poolRem[g.gi] = (poolRem[g.gi] || 0) + 1; });
 
-  // Schedule: each slot runs one game per court in parallel
+  const lastSlot = {};   // couple name -> last slot index they played
   const scheduled = [];
-  for (let si = 0; si < maxGames; si++) {
-    courts.forEach(court => {
-      if (si < courtQueues[court].length) {
-        const g = courtQueues[court][si];
-        g.si   = si;
-        g.time = addM(cfg.startTime, si * slotDur);
-        scheduled.push(g);
+  let si = 0;
+  while (remaining.length && si < 1000) {
+    const used = new Set();   // couples already booked this slot
+    courtList.forEach(court => {
+      let best = null, bestScore = null, bestIdx = -1;
+      for (let i = 0; i < remaining.length; i++) {
+        const g = remaining[i];
+        if (used.has(g.a) || used.has(g.b)) continue;
+        const home    = g.homeCourt === court ? 1 : 0;
+        const restA   = si - (g.a in lastSlot ? lastSlot[g.a] : si - 3);
+        const restB   = si - (g.b in lastSlot ? lastSlot[g.b] : si - 3);
+        const minRest = Math.min(restA, restB, 2);   // avoid back-to-back; cap so long rests don't dominate
+        const score   = [home, minRest, poolRem[g.gi] || 0];
+        if (bestScore === null || cmpScore(score, bestScore) > 0) {
+          best = g; bestScore = score; bestIdx = i;
+        }
       }
+      if (!best) return;   // nothing playable -> this court rests this slot
+      best.si   = si;
+      best.court = court;
+      best.time = addM(cfg.startTime, si * slotDur);
+      used.add(best.a); used.add(best.b);
+      lastSlot[best.a] = si; lastSlot[best.b] = si;
+      poolRem[best.gi]--;
+      scheduled.push(best);
+      remaining.splice(bestIdx, 1);
     });
+    si++;
   }
   DS.sched = scheduled;
 
@@ -847,6 +904,7 @@ function generateScheduleForDiv(div) {
 
 function generateSchedule() {
   if (!superAdmin) return;
+  if (anyActiveStarted()) { lockedIfStarted(getActiveDivs().find(divHasStarted)); return; }
   getActiveDivs().forEach(div => generateScheduleForDiv(div));
   save();
   goPage('schedule');
@@ -1558,6 +1616,7 @@ function renderSettings() {
 
 function applySettings(div) {
   if (!superAdmin) return;
+  if (lockedIfStarted(div)) return;
   // Block Firebase snapshots from overwriting while we rebuild
   applyingRemoteState = true;
   try {
