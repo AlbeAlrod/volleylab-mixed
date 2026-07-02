@@ -834,14 +834,13 @@ function generateScheduleForDiv(div) {
   const sfIdx  = finIdx - 1;
   if (sfIdx >= 0 && DS.ko[finIdx].length === 1 && DS.ko[sfIdx].length === 2) {
     const finGame = DS.ko[finIdx][0];
-    // Play 3rd place in the final's slot, then push the final one slot later.
+    // Play 3rd place in the SAME slot as the final, on a parallel court.
     const bronze = {
       a: 'Loser of Semifinals 1', b: 'Loser of Semifinals 2',
       sa: '', sb: '', div, bronze: true,
-      court: finGame.court, si: finGame.si, time: finGame.time
+      court: nc >= 2 ? finGame.court + 1 : finGame.court,
+      si: finGame.si, time: finGame.time
     };
-    finGame.si  += 1;
-    finGame.time = addM(cfg.startTime, finGame.si * slotDur);
     DS.ko.push([bronze]);
   }
 }
@@ -1140,8 +1139,8 @@ function renderScheduleContent() {
   Object.keys(byTime).sort((a, b) => t2m(a) - t2m(b)).forEach(time => {
     const games = byTime[time];
     // Round tag: if there are KO games in this slot, show the round name
-    const koGame = games.find(g => g._isKO);
-    const roundTag = koGame ? `<span class="rtag">${koGame._rn}</span>` : '';
+    const koNames = [...new Set(games.filter(g => g._isKO).map(g => g._rn))];
+    const roundTag = koNames.length ? `<span class="rtag">${koNames.join(' / ')}</span>` : '';
     const block = document.createElement('div');
     block.className = 'tblock';
     block.innerHTML = `<div class="thdr"><span class="tlbl">${time}</span><div class="tline"></div>${roundTag}</div>`;
@@ -1275,8 +1274,13 @@ function renderBracketForDiv(div, container) {
   const HG = 90;   // bmatch height (78) + base gap (12)
   const GAP = 12;
 
+  // The 3rd-place match rides along in the final's column (below the final box).
+  const bronzeRound = DS.ko.find(r => r[0] && r[0].bronze);
+  const finalRoundIdx = bronzeRound ? DS.ko.length - 2 : DS.ko.length - 1;
+  let finalMatchesEl = null;
+
   DS.ko.forEach((round, ri) => {
-    if (round[0] && round[0].bronze) return;  // 3rd-place shown separately, not as a tree column
+    if (round[0] && round[0].bronze) return;  // 3rd-place shown inside the final column, not as its own tree column
     const col = document.createElement('div');
     col.className = 'bround';
     col.innerHTML = `<div class="brnd-title">${getKORoundName(div, ri)}</div>`;
@@ -1333,22 +1337,21 @@ function renderBracketForDiv(div, container) {
     });
     col.appendChild(matchesEl);
     tree.appendChild(col);
+    if (ri === finalRoundIdx) finalMatchesEl = matchesEl;
   });
 
-  container.appendChild(scroll);
-
-  // 3rd-place playoff — shown as its own box under the tree (it isn't a bracket column)
-  const bronzeRound = DS.ko.find(r => r[0] && r[0].bronze);
-  if (bronzeRound) {
+  // Attach the 3rd-place match beneath the final, in the same column.
+  if (bronzeRound && finalMatchesEl) {
     const bz = bronzeRound[0];
     const bsa = parseInt(bz.sa), bsb = parseInt(bz.sb);
     const bhs = isValidScore(bsa, bsb);
     const knownA = bz.a && !bz.a.startsWith('Loser of');
     const knownB = bz.b && !bz.b.startsWith('Loser of');
     const bwa = bhs && bsa > bsb, bwb = bhs && bsb > bsa;
-    const bronzeEl = document.createElement('div');
-    bronzeEl.className = 'bronze-wrap';
-    bronzeEl.innerHTML = `<div class="bronze-title">&#129353; 3RD PLACE</div>
+    const bronzeWrap = document.createElement('div');
+    bronzeWrap.className = 'bmatch-wrap bronze-inline';
+    bronzeWrap.innerHTML = `<div>
+      <div class="bronze-title">&#129353; 3RD PLACE</div>
       <div class="bmatch-box">
         <div class="bmatch">
           <div class="bteam ${bwa ? 'win' : ''} ${knownA ? '' : 'tbd'}">
@@ -1358,9 +1361,11 @@ function renderBracketForDiv(div, container) {
             <span class="bname">${bz.b}</span>${bhs ? `<span class="bsc">${bz.sb}</span>` : ''}
           </div>
         </div>
-      </div>`;
-    container.appendChild(bronzeEl);
+      </div></div>`;
+    finalMatchesEl.appendChild(bronzeWrap);
   }
+
+  container.appendChild(scroll);
 
   // Champion — the final is the last round that isn't the 3rd-place match
   let finRoundIdx = DS.ko.length - 1;
