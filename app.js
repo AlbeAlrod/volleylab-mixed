@@ -252,6 +252,7 @@ function roundName(count) {
 function getKORoundName(div, ri) {
   const ko = S[div] && S[div].ko;
   if (!ko || !ko[ri]) return '';
+  if (ko[ri][0] && ko[ri][0].bronze) return '3rd Place';
   return roundName(ko[ri].length * 2);
 }
 
@@ -826,6 +827,23 @@ function generateScheduleForDiv(div) {
     DS.ko.push(round);
     matches = Math.floor(matches / 2);
   }
+
+  // ---- 3rd-place playoff (losers of the two semifinals) ----
+  // Only when the bracket has a real semifinal round (2 games) feeding the final (1 game).
+  const finIdx = DS.ko.length - 1;
+  const sfIdx  = finIdx - 1;
+  if (sfIdx >= 0 && DS.ko[finIdx].length === 1 && DS.ko[sfIdx].length === 2) {
+    const finGame = DS.ko[finIdx][0];
+    // Play 3rd place in the final's slot, then push the final one slot later.
+    const bronze = {
+      a: 'Loser of Semifinals 1', b: 'Loser of Semifinals 2',
+      sa: '', sb: '', div, bronze: true,
+      court: finGame.court, si: finGame.si, time: finGame.time
+    };
+    finGame.si  += 1;
+    finGame.time = addM(cfg.startTime, finGame.si * slotDur);
+    DS.ko.push([bronze]);
+  }
 }
 
 function generateSchedule() {
@@ -988,8 +1006,10 @@ function renderStats() {
     totalPool += DS.sched.length;
     donePool  += DS.sched.filter(g => isValidScore(parseInt(g.sa), parseInt(g.sb))).length;
     totalKO   += DS.ko.reduce((s, r) => s + r.length, 0);
-    const src  = DS.ko.length ? DS.ko[DS.ko.length-1] : null;
-    const last = src ? src[0] : (DS.sched.length ? DS.sched[DS.sched.length-1] : null);
+    const koGames = DS.ko.flat();
+    const last = koGames.length
+      ? koGames.reduce((a, b) => (t2m(b.time||'00:00') > t2m(a.time||'00:00') ? b : a))
+      : (DS.sched.length ? DS.sched[DS.sched.length-1] : null);
     if (last && t2m(last.time||'00:00') > t2m(lastTime)) {
       lastTime = last.time; lastDur = DS.cfg.gameDur;
     }
@@ -1182,6 +1202,17 @@ function updateKOForDiv(div) {
 
   for (let ri = 1; ri < DS.ko.length; ri++) {
     DS.ko[ri].forEach((g, gi) => {
+      // 3rd-place match: the two beaten semifinalists (losers, not winners).
+      if (g.bronze) {
+        const sf = DS.ko[ri-2];  // rounds run [..., Semifinals, Final, 3rd Place]
+        const loserOf = game => {
+          const w = getKOWinner(game);
+          return w ? (w === game.a ? game.b : game.a) : null;
+        };
+        g.a = (sf && sf[0] && loserOf(sf[0])) || 'Loser of Semifinals 1';
+        g.b = (sf && sf[1] && loserOf(sf[1])) || 'Loser of Semifinals 2';
+        return;
+      }
       const wa = getKOWinner(DS.ko[ri-1][gi*2]);
       const wb = getKOWinner(DS.ko[ri-1][gi*2+1]);
       const rndName = getKORoundName(div, ri-1);
@@ -1245,6 +1276,7 @@ function renderBracketForDiv(div, container) {
   const GAP = 12;
 
   DS.ko.forEach((round, ri) => {
+    if (round[0] && round[0].bronze) return;  // 3rd-place shown separately, not as a tree column
     const col = document.createElement('div');
     col.className = 'bround';
     col.innerHTML = `<div class="brnd-title">${getKORoundName(div, ri)}</div>`;
@@ -1305,8 +1337,35 @@ function renderBracketForDiv(div, container) {
 
   container.appendChild(scroll);
 
-  // Champion
-  const fin = DS.ko[DS.ko.length-1][0];
+  // 3rd-place playoff — shown as its own box under the tree (it isn't a bracket column)
+  const bronzeRound = DS.ko.find(r => r[0] && r[0].bronze);
+  if (bronzeRound) {
+    const bz = bronzeRound[0];
+    const bsa = parseInt(bz.sa), bsb = parseInt(bz.sb);
+    const bhs = isValidScore(bsa, bsb);
+    const knownA = bz.a && !bz.a.startsWith('Loser of');
+    const knownB = bz.b && !bz.b.startsWith('Loser of');
+    const bwa = bhs && bsa > bsb, bwb = bhs && bsb > bsa;
+    const bronzeEl = document.createElement('div');
+    bronzeEl.className = 'bronze-wrap';
+    bronzeEl.innerHTML = `<div class="bronze-title">&#129353; 3RD PLACE</div>
+      <div class="bmatch-box">
+        <div class="bmatch">
+          <div class="bteam ${bwa ? 'win' : ''} ${knownA ? '' : 'tbd'}">
+            <span class="bname">${bz.a}</span>${bhs ? `<span class="bsc">${bz.sa}</span>` : ''}
+          </div>
+          <div class="bteam ${bwb ? 'win' : ''} ${knownB ? '' : 'tbd'}">
+            <span class="bname">${bz.b}</span>${bhs ? `<span class="bsc">${bz.sb}</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+    container.appendChild(bronzeEl);
+  }
+
+  // Champion — the final is the last round that isn't the 3rd-place match
+  let finRoundIdx = DS.ko.length - 1;
+  if (DS.ko[finRoundIdx] && DS.ko[finRoundIdx][0] && DS.ko[finRoundIdx][0].bronze) finRoundIdx--;
+  const fin = finRoundIdx >= 0 && DS.ko[finRoundIdx] ? DS.ko[finRoundIdx][0] : null;
   if (fin) {
     const fsa = parseInt(fin.sa), fsb = parseInt(fin.sb);
     if (isValidScore(fsa, fsb)) {
